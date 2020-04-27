@@ -73,7 +73,7 @@ def imp_cont_img_file(file, clip_limit=None):
     if clip_limit is None:
         clip_limit = get_clip_limit(file.split('/')[-1])
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8,8))
-    img = cv2.imread(file, cv2.IMREAD_UNCHANGED).astype(float) / 255
+    img = cv2.imread(file, cv2.IMREAD_GRAYSCALE).astype(float) / 255
     img -= 0.1
     img = (np.clip(img / img.max(), 0, 1) * 255).astype(np.uint8)
     img = clahe.apply(img).astype(float) / 255
@@ -93,35 +93,53 @@ def preprocess_image(image, clip_limit=None, tile=(8,8)):
     return image
 
 
-def big_image_predict(model, image, crop_size, inp_size, normalize=True):
+def big_image_predict(model, image, crop_size, inp_size, normalize=True, device='cpu'):
     
     h, w = image.shape[:2]
-    mask = np.zeros(image.shape[:2], dtype = float)
-    num_img_y = int(np.ceil(h / crop_size[1])) * 2 - 1
-    num_img_x = int(np.ceil(w / crop_size[0])) * 2 - 1
+    st_mask = np.zeros(image.shape[:2], dtype = float)
+    asb_mask = np.zeros(image.shape[:2], dtype = float)
+    mean_mask = np.zeros(image.shape[:2], dtype = float)
+    num_img_y = int(np.ceil(h / crop_size[0])) * 2 - 1
+    num_img_x = int(np.ceil(w / crop_size[1])) * 2 - 1
     image = preprocess_image(image, 1.2)
+    
     
     if normalize:
         image = (image - 0.5) / 0.5 
     
     for j in range(num_img_y):
         for i in range(num_img_x):
-            part_image = image[int(j / 2 * crop_size[1]):int((j / 2 + 1) * crop_size[1]), int(i / 2 * crop_size[0]):int((i / 2 + 1) * crop_size[0])].copy()
+            part_image = image[int(j / 2  * crop_size[0]):int((j / 2 + 1) * crop_size[0]), 
+                               int(i / 2 * crop_size[1]):int((i / 2 + 1) * crop_size[1])].copy()
+            mean_mask[int(j / 2  * crop_size[0]):int((j / 2 + 1) * crop_size[0]), 
+                      int(i / 2 * crop_size[1]):int((i / 2 + 1) * crop_size[1])] += 1
             init_shape = part_image.shape[:2]
             
-            if part_image.shape[0] < crop_size[1]:
-                part_image = np.concatenate((part_image, np.zeros((crop_size[1] - part_image.shape[0], part_image.shape[1]))), axis=0)
+            if part_image.shape[0] < crop_size[0]:
+                part_image = np.concatenate((part_image, 
+                                             np.zeros((crop_size[1] - part_image.shape[0], part_image.shape[1]))), axis=0)
             
-            if part_image.shape[1] < crop_size[0]:
-                part_image = np.concatenate((part_image, np.zeros((part_image.shape[0], crop_size[0] - part_image.shape[1]))), axis=1)
+            if part_image.shape[1] < crop_size[1]:
+                part_image = np.concatenate((part_image, 
+                                             np.zeros((part_image.shape[0], crop_size[0] - part_image.shape[1]))), axis=1)
             
             part_image = cv2.resize(part_image, inp_size, interpolation = 1)
             
-            part_image = torch.tensor(np.expand_dims(np.expand_dims(part_image, axis=0), axis=0)).to('cuda:0').float()
+            part_image = torch.tensor(np.expand_dims(np.expand_dims(part_image, axis=0), axis=0)).to(device).float()
             
             out_mask = model(part_image).cpu()
             out_mask = np.squeeze(out_mask.cpu().detach().numpy())
-            out_mask = cv2.resize(out_mask, crop_size, interpolation=0) [:init_shape[0], :init_shape[1]]
+            out_st_mask = out_mask[0]
+            out_asb_mask = out_mask[1]
+            out_st_mask = cv2.resize(out_st_mask, (crop_size[1], crop_size[0]), interpolation=0) [:init_shape[0], :init_shape[1]]
+            out_asb_mask = cv2.resize(out_asb_mask, (crop_size[1], crop_size[0]), interpolation=0) [:init_shape[0], :init_shape[1]]
             
-            mask[int(j / 2  * crop_size[1]):int((j / 2 + 1) * crop_size[1]), int(i / 2 * crop_size[0]):int((i / 2 + 1) * crop_size[0])] += out_mask
-    return image, np.clip(mask, 0, 1)
+            st_mask[int(j / 2  * crop_size[0]):int((j / 2 + 1) * crop_size[0]), 
+                    int(i / 2 * crop_size[1]):int((i / 2 + 1) * crop_size[1])] += out_st_mask
+            asb_mask[int(j / 2  * crop_size[0]):int((j / 2 + 1) * crop_size[0]), 
+                     int(i / 2 * crop_size[1]):int((i / 2 + 1) * crop_size[1])] += out_asb_mask
+    
+    if normalize:
+        image = (image + 1) / 2
+    
+    return np.clip(image, 0, 1), np.clip(st_mask / mean_mask, 0, 1), np.clip(asb_mask / mean_mask, 0, 1)
