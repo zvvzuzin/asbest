@@ -4,6 +4,39 @@ import numpy as np
 import cv2
 import torch
 
+class AverageMeter(object):
+    def __init__(self):
+        self.initialized = False
+        self.val = None
+        self.avg = None
+        self.sum = None
+        self.count = None
+
+    def initialize(self, val, weight):
+        self.val = val
+        self.avg = val
+        self.sum = val * weight
+        self.count = weight
+        self.initialized = True
+
+    def update(self, val, weight=1):
+        if not self.initialized:
+            self.initialize(val, weight)
+        else:
+            self.add(val, weight)
+
+    def add(self, val, weight):
+        self.val = val
+        self.sum += val * weight
+        self.count += weight
+        self.avg = self.sum / self.count
+
+    def value(self):
+        return self.val
+
+    def average(self):
+        return self.avg
+
 def parse_anno_file(cvat_xml):
     root = etree.parse(cvat_xml).getroot()
     anno = []
@@ -127,6 +160,7 @@ def big_image_predict(model, image, crop_size, inp_size, normalize=True, device=
             
             part_image = torch.tensor(np.expand_dims(np.expand_dims(part_image, axis=0), axis=0)).to(device).float()
             
+            model.eval()
             out_mask = model(part_image).cpu()
             out_mask = np.squeeze(out_mask.cpu().detach().numpy())
             out_st_mask = out_mask[0]
